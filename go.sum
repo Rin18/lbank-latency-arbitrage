@@ -1,0 +1,8 @@
+github.com/Rin18/bookticker-manager v0.0.0-20260718142418-55ecbfac8c4d h1:/cuMZZjIA/Rx+O3/koC7qwS6lmUv9qlyJV54ZKQ6/Q8=
+github.com/Rin18/bookticker-manager v0.0.0-20260718142418-55ecbfac8c4d/go.mod h1:zghuvPmQwPT12qBXrYkHC62vqZ4uYJT2E987LXkBw1I=
+github.com/Rin18/place-order-client v0.0.0-20260718181002-f731a9c5698a h1:P2ic9kJDBJS2aM+qmB9e7BY57DBGxPYCglxZ2vxVDHg=
+github.com/Rin18/place-order-client v0.0.0-20260718181002-f731a9c5698a/go.mod h1:quJlxCfc7fSLbq384d89NIBfRGPQRjGKqv1bVa8jxy8=
+github.com/gammazero/deque v1.2.1 h1:9fnQVFCCZ9/NOc7ccTNqzoKd1tCWOqeI05/lPqFPMGQ=
+github.com/gammazero/deque v1.2.1/go.mod h1:5nSFkzVm+afG9+gy0VIowlqVAW4N8zNcMne+CMQVD2g=
+github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
+github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=

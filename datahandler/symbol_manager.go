@@ -46,6 +46,9 @@ func (sm *SymbolManager) Update(timestamp int64, bidPrice int64, askPrice int64)
 }
 
 func (sm *SymbolManager) ArbitrageCheck() {
+	if sm.slowWindowBid.IsEmpty() || sm.slowWindowAsk.IsEmpty() {
+		return
+	}
 	// long condition check
 	longExitPrice := sm.fastWindowBid.Min().Price
 	longEntryPrice := sm.slowWindowAsk.Max().Price

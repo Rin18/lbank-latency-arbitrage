@@ -105,7 +105,14 @@ func main() {
 		}
 		tgMsg := fmt.Sprintf("Order Sent\n"+
 			"Sent Time: %d"+
-			"receipt: %v", sendRequestTime, receipt)
+			"symbol: %s"+
+			"price: %s"+
+			"tpPrice: %s"+
+			"slPrice: %s"+
+			"volume: %s"+
+			"isLong: %v"+
+			"isIOC: %v"+
+			"receipt: %v", sendRequestTime, symbol, price_str, tpPrice_str, slPrice_str, volume_str, isLong, isIOC, receipt)
 		go telegramBotClient.Send(tgMsg)
 	}
 }

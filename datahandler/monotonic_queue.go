@@ -59,3 +59,11 @@ func (mq *MonotonicMaxQueue) Max() Tick {
 func (mq *MonotonicMinQueue) Min() Tick {
 	return mq.deque.Front()
 }
+
+func (mq *MonotonicMaxQueue) IsEmpty() bool {
+	return mq.deque.IsEmpty()
+}
+
+func (mq *MonotonicMinQueue) IsEmpty() bool {
+	return mq.deque.IsEmpty()
+}

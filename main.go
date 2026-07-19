@@ -10,19 +10,18 @@ import (
 	"github.com/Rin18/place-order-client/lbankfutures"
 )
 
-const token = "779e05cbfbc34b778b6bdc96e401ed8e"
+const token = "09eb22f9ccbe40cdbe9d9dd0f7d01e6a"
 
-var symbols = []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "WLFIUSDT", "QTUMUSDT", "LTCUSDT", "ZECUSDT", "BANDUSDT", "BANKUSDT"}
+var symbols = []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "WLFIUSDT", "QTUMUSDT", "LTCUSDT", "ZECUSDT", "BANDUSDT", "BANKUSDT", "BUSDT", "AKEUSDT"}
 
 const threshold = 0.0025
 
 const scale = 8
 
 func main() {
-	InitLogger()
 	manager := NewTickerManager()
 	orderclient := lbankfutures.NewPlaceOrderClient(token)
-	period := 2 * time.Second
+	period := 1 * time.Second
 	latency := 250 * time.Millisecond
 	arbch := make(chan arbMsg, 10)
 	statusch := make(chan common.WsStatus, 500)
@@ -31,12 +30,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("Fetch Metadata error: %v", err)
 	}
+	file, err := os.OpenFile("log.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("Open file error: %v", err)
+	}
+	defer file.Close()
+	fileLogger := slog.New(slog.NewJSONHandler(file, nil))
+
 	go manager.Start(symbols, period, latency, threshold, arbch, statusch)
 	go orderclient.StartIdleRequest()
 	go func() {
 		for msg := range statusch {
 			health = msg.IsHealthy
-			log.Println(msg)
+			fileLogger.Info("Status message received", "Status", msg)
 		}
 	}()
 	for msg := range arbch {
@@ -44,6 +50,10 @@ func main() {
 			continue
 		}
 		symbol := msg.symbol
+		if manager.symbolsInfo[symbol].cooldown > 0 {
+			continue
+		}
+
 		isLong := msg.isLong
 		isIOC := false
 
@@ -66,51 +76,42 @@ func main() {
 			log.Printf("price format error: %v\n", err)
 			continue
 		}
-		volume, err := orderclient.Format.GetMinVolume(symbol)
+
+		volume := int64(20e16) / price
+		volume, isEnough, err := orderclient.Format.FormatVolume(symbol, volume)
 		if err != nil {
 			log.Printf("price format error: %v\n", err)
 			continue
 		}
+		if !isEnough {
+			continue
+		}
 		price_str := common.Parseint64tostring(price, scale)
+		volume_str := common.Parseint64tostring(volume, scale)
 		tpPrice_str := common.Parseint64tostring(tpPrice, scale)
 		slPrice_str := common.Parseint64tostring(slPrice, scale)
 
-		orderclient.LimitTPSLOrder(symbol, price_str, volume, tpPrice_str, slPrice_str, isLong, isIOC)
-
-		// save for analysis
-		tickerSnapshot := make([]common.Ticker, 0, manager.tickers[symbol].Len())
-		for i := 0; i < manager.tickers[symbol].Len(); i++ {
-			tickerSnapshot = append(tickerSnapshot, manager.tickers[symbol].At(i))
+		manager.symbolsInfo[symbol].cooldown = 5 * time.Second
+		sendRequestTime := time.Now().UnixMicro()
+		receipt, err := orderclient.LimitTPSLOrder(symbol, price_str, volume_str, tpPrice_str, slPrice_str, isLong, isIOC)
+		if err != nil {
+			slog.Error("Place order error", "error", err)
+			continue
 		}
 
-		slog.Info("LimitTPSLOrder called",
+		fileLogger.Info("LimitTPSLOrder called",
+			"tickerReceiveTime", msg.tickerReceiveTime,
+			"sendRequestTime", sendRequestTime,
 			"symbol", symbol,
 			"price_str", price_str,
-			"volume", volume,
+			"volume", volume_str,
 			"tpPrice_str", tpPrice_str,
 			"slPrice_str", slPrice_str,
 			"isLong", isLong,
 			"isIOC", isIOC,
-			"tickers_snapshot", tickerSnapshot,
+			"rawArbMsg", msg,
+			"receipt", receipt,
 		)
 	}
 
-}
-
-func InitLogger() *os.File {
-	// 打开或创建日志文件，追加模式
-	file, err := os.OpenFile("trade_app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		panic("无法打开日志文件: " + err.Error())
-	}
-
-	// 推荐使用 JSON 格式保存到文件，方便后续排查和日志系统收集
-	// 如果你更喜欢可读的普通文本，可以换成 slog.NewTextHandler(file, nil)
-	handler := slog.NewJSONHandler(file, nil)
-
-	// 替换全局默认的 logger
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
-	return file // 返回 file 以便在 main 函数结束时关闭
 }

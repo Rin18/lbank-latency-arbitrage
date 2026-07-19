@@ -1,117 +1,132 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	"log/slog"
-	"os"
 	"time"
 
+	"github.com/Rin18/bookticker-manager/binance/binancefutures"
 	"github.com/Rin18/bookticker-manager/common"
+	"github.com/Rin18/lbank-latency-arbitrage/datahandler"
 	"github.com/Rin18/place-order-client/lbankfutures"
 )
-
-const token = "09eb22f9ccbe40cdbe9d9dd0f7d01e6a"
-
-var symbols = []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "WLFIUSDT", "QTUMUSDT", "LTCUSDT", "ZECUSDT", "BANDUSDT", "BANKUSDT", "BUSDT", "AKEUSDT"}
-
-const threshold = 0.0025
 
 const scale = 8
 
 func main() {
-	manager := NewTickerManager()
-	orderclient := lbankfutures.NewPlaceOrderClient(token)
-	period := 1 * time.Second
-	latency := 250 * time.Millisecond
-	arbch := make(chan arbMsg, 10)
-	statusch := make(chan common.WsStatus, 500)
-	var health bool = false
-	err := orderclient.Fetch_metadata()
+	config, err := ReadConfig("config.toml")
 	if err != nil {
-		log.Fatalf("Fetch Metadata error: %v", err)
+		log.Fatalf("Read Config Error: %v", err)
 	}
-	file, err := os.OpenFile("log.jsonl", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	telegramBotClient, err := NewtelegramBotClient(config.TelegramToken, config.TelegramChatID)
 	if err != nil {
-		log.Fatalf("Open file error: %v", err)
+		log.Fatalf("Telegram Bot Client initialize error: %v", err)
 	}
-	defer file.Close()
-	fileLogger := slog.New(slog.NewJSONHandler(file, nil))
+	binanceClient := binancefutures.NewWsClient()
 
-	go manager.Start(symbols, period, latency, threshold, arbch, statusch)
-	go orderclient.StartIdleRequest()
+	lbankClient := lbankfutures.NewPlaceOrderClient(config.LbankToken)
+	err = lbankClient.Fetch_metadata()
+	if err != nil {
+		log.Fatalf("lbank fetch metadata error: %v", err)
+	}
+	go lbankClient.StartIdleRequest()
+
+	binanceTickerCh := make(chan common.Ticker, 2000)
+	statusCh := make(chan common.WsStatus, 100)
+	go binanceClient.Start(config.Symbols, time.Duration(config.WsTimeOut)*time.Millisecond, binanceTickerCh, statusCh)
+	healthy := false
+	arbMsgch := make(chan datahandler.ArbitrageMsg, 10)
+	symbolsManager := NewSymbolsManager(config.Symbols, config.SlowWindowLengthms, config.FastWindowLengthms, arbMsgch, config.ArbitrageThreshold)
+
 	go func() {
-		for msg := range statusch {
-			health = msg.IsHealthy
-			fileLogger.Info("Status message received", "Status", msg)
+		for msg := range statusCh {
+			healthy = msg.IsHealthy
+			log.Printf("Receive Binance Websocket Status: %v\n", msg)
 		}
 	}()
-	for msg := range arbch {
-		if !health {
-			continue
+	go func() {
+		for tickerMsg := range binanceTickerCh {
+			symbolsManager.ProcessTicker(tickerMsg)
 		}
-		symbol := msg.symbol
-		if manager.symbolsInfo[symbol].cooldown > 0 {
-			continue
-		}
+	}()
 
-		isLong := msg.isLong
-		isIOC := false
-
-		price := msg.price
-		tpPrice := msg.tpPrice
-		slPrice := msg.slPrice
-
-		price, err = orderclient.Format.FormatPrice(symbol, price)
-		if err != nil {
-			log.Printf("price format error: %v\n", err)
+	lastOrderTime := time.Now()
+	for arbMsg := range arbMsgch {
+		if !healthy {
 			continue
 		}
-		tpPrice, err = orderclient.Format.FormatPrice(symbol, tpPrice)
-		if err != nil {
-			log.Printf("price format error: %v\n", err)
+		if time.Since(lastOrderTime) < 5*time.Second {
 			continue
 		}
-		slPrice, err = orderclient.Format.FormatPrice(symbol, slPrice)
+		symbol := arbMsg.Symbol
+		isLong := arbMsg.IsLong
+		price := arbMsg.EntryPrice
+		tpPrice := arbMsg.ExitPrice
+		slPrice := 2*price - tpPrice
+		isIOC := config.IsIOC
+		volume := (config.Volume * 1e16) / price
+		// format
+		price, err := lbankClient.Format.FormatPrice(symbol, price)
 		if err != nil {
-			log.Printf("price format error: %v\n", err)
+			log.Printf("Format price error: %v\n", err)
 			continue
 		}
-
-		volume := int64(20e16) / price
-		volume, isEnough, err := orderclient.Format.FormatVolume(symbol, volume)
+		tpPrice, err = lbankClient.Format.FormatPrice(symbol, tpPrice)
 		if err != nil {
-			log.Printf("price format error: %v\n", err)
+			log.Printf("Format price error: %v\n", err)
+			continue
+		}
+		slPrice, err = lbankClient.Format.FormatPrice(symbol, slPrice)
+		if err != nil {
+			log.Printf("Format price error: %v\n", err)
+			continue
+		}
+		volume, isEnough, err := lbankClient.Format.FormatVolume(symbol, volume)
+		if err != nil {
+			log.Printf("Format volume error: %v\n", err)
 			continue
 		}
 		if !isEnough {
+			log.Printf("volume %v less than minimum required\n", volume)
 			continue
 		}
+		// convert to string
 		price_str := common.Parseint64tostring(price, scale)
 		volume_str := common.Parseint64tostring(volume, scale)
 		tpPrice_str := common.Parseint64tostring(tpPrice, scale)
 		slPrice_str := common.Parseint64tostring(slPrice, scale)
 
-		manager.symbolsInfo[symbol].cooldown = 5 * time.Second
+		lastOrderTime = time.Now()
 		sendRequestTime := time.Now().UnixMicro()
-		receipt, err := orderclient.LimitTPSLOrder(symbol, price_str, volume_str, tpPrice_str, slPrice_str, isLong, isIOC)
+		receipt, err := lbankClient.LimitTPSLOrder(symbol, price_str, volume_str, tpPrice_str, slPrice_str, isLong, isIOC)
 		if err != nil {
-			slog.Error("Place order error", "error", err)
+			log.Printf("Send LimitTPSLOrder error: %v\n", err)
 			continue
 		}
-
-		fileLogger.Info("LimitTPSLOrder called",
-			"tickerReceiveTime", msg.tickerReceiveTime,
-			"sendRequestTime", sendRequestTime,
-			"symbol", symbol,
-			"price_str", price_str,
-			"volume", volume_str,
-			"tpPrice_str", tpPrice_str,
-			"slPrice_str", slPrice_str,
-			"isLong", isLong,
-			"isIOC", isIOC,
-			"rawArbMsg", msg,
-			"receipt", receipt,
-		)
+		tgMsg := fmt.Sprintf("Order Sent\n"+
+			"Sent Time: %d"+
+			"receipt: %v", sendRequestTime, receipt)
+		go telegramBotClient.Send(tgMsg)
 	}
+}
 
+type SymbolsManager struct {
+	symbolManagers map[string]*datahandler.SymbolManager
+}
+
+func NewSymbolsManager(symbols []string, slowWindowLengthms int64, fastWindowLengthms int64, arbMsgCh chan<- datahandler.ArbitrageMsg, arbitrageThreshold float64) *SymbolsManager {
+	symbolManagers := make(map[string]*datahandler.SymbolManager)
+	for _, symbol := range symbols {
+		symbolManagers[symbol] = datahandler.NewSymbolManager(symbol, slowWindowLengthms*1000, fastWindowLengthms*1000, arbMsgCh, arbitrageThreshold, 8000)
+	}
+	return &SymbolsManager{
+		symbolManagers: symbolManagers,
+	}
+}
+
+func (ssm *SymbolsManager) ProcessTicker(ticker common.Ticker) {
+	symbol := ticker.Symbol
+	timestamp := ticker.ReceiveTime
+	ssm.symbolManagers[symbol].Update(timestamp, ticker.BidPrice, ticker.AskPrice)
+	ssm.symbolManagers[symbol].ArbitrageCheck()
 }
